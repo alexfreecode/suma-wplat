@@ -114,7 +114,7 @@ TITLE     = f"{APP_NAME} {APP_VERSION} — wpłaty od klientów z wyciągu banko
 
 # Adresy używane w oknie „O programie”. Repozytorium może kiedyś zmienić
 # nazwę; GitHub trzyma wtedy przekierowanie, ale lepiej poprawić tutaj.
-GITHUB_REPO   = "alexfreecode/mbank-analyzer"
+GITHUB_REPO   = "alexfreecode/suma-wplat"
 RELEASES_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 DONATE_URL    = "https://revolut.me/oleksa49b"
