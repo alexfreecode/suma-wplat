@@ -9,13 +9,16 @@ Program automatyzuje tę żmudną, ręczną pracę.
 
 Obsługiwane banki: **mBank** (plik CSV) i **PKO BP** (plik XLS).
 
+Strona programu: **[sumawplat.pl](https://sumawplat.pl)** (opis, pomoc krok
+po kroku dla mBanku i PKO BP, lista zmian).
+
 > Projekt nieoficjalny — nie jest powiązany z mBank S.A. ani Saldeo Smart.
 > Program jedynie odczytuje pliki CSV/Excel eksportowane ręcznie przez
 > użytkownika z tych serwisów.
 
-[![Suma Wpłat, zobacz demo (1:29)](docs/video-card.jpg)](https://youtu.be/Qm_jxkHjdH4)
+[![Suma Wpłat, zobacz demo](docs/video-card.jpg)](https://youtu.be/qFdElqAruFI)
 
-<sub>▶ Półtorej minuty: od pliku pobranego z mBanku do gotowych faktur w Saldeo.</sub>
+<sub>▶ Niecałe dwie minuty: od pliku pobranego z banku do gotowych faktur w Saldeo.</sub>
 
 ## Co program potrafi
 
@@ -83,6 +86,7 @@ Szczegółowa instrukcja — przycisk **„Pomoc”** w programie.
 
 ## Pytania i nowe wersje
 
+- **Strona programu**: opis, pomoc i lista zmian: https://sumawplat.pl
 - **Grupa na Facebooku**: pytania o program, pomoc przy pierwszym
   uruchomieniu, informacje o nowych wersjach:
   https://www.facebook.com/groups/1828772831868826
