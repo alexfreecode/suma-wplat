@@ -1402,7 +1402,7 @@ class AboutDialog(tk.Toplevel):
                      "Sprawdź połączenie z internetem albo zajrzyj na stronę\n"
                      "wydań ręcznie — program działa dalej normalnie.",
             )
-            self._btn_pobierz.pack(anchor="w", pady=(8, 0))
+            self._btn_pobierz.pack(anchor="w", pady=(8, 0), after=self._wynik)
             return
 
         moja = _parse_version(APP_VERSION)
@@ -1430,12 +1430,18 @@ class AboutDialog(tk.Toplevel):
         )
 
         tekst = []
+        naglowki = []                       # numery wierszy do pogrubienia
         for w in nowsze[:MAX_WYDAN_W_OKNIE]:
             tag = w.get("tag_name", "").lstrip("vV")
             nazwa = (w.get("name") or "").strip()
-            naglowek = f"Wersja {tag}" + (f" — {nazwa}" if nazwa and nazwa != tag else "")
+            # Wydania nazywają się „Suma Wpłat 1.3.1”: numer już jest w nazwie,
+            # a doklejanie jej dawało „Wersja 1.3.1 — Suma Wpłat 1.3.1”
+            naglowek = f"Wersja {tag}" + (
+                f" — {nazwa}" if nazwa and tag not in nazwa else "")
+            # Podkreślenie znakami „─” nie pasowało do czcionki proporcjonalnej:
+            # linia zawijała się w drugi, krótki wiersz. Nagłówek pogrubiamy.
+            naglowki.append(len(tekst) + 1)
             tekst.append(naglowek)
-            tekst.append("─" * len(naglowek))
             opis = _wyciag_zmian(w.get("body")) or "(brak opisu zmian)"
             wiersze = opis.split("\n")
             if len(wiersze) > MAX_WIERSZY_NA_WYDANIE:
@@ -1455,10 +1461,16 @@ class AboutDialog(tk.Toplevel):
         self._zmiany.configure(state=tk.NORMAL)
         self._zmiany.delete("1.0", tk.END)
         self._zmiany.insert("1.0", "\n".join(tekst).strip())
+        self._zmiany.tag_configure("naglowek", font=("Segoe UI", 9, "bold"))
+        for nr in naglowki:
+            self._zmiany.tag_add("naglowek", f"{nr}.0", f"{nr}.end")
         self._zmiany.configure(state=tk.DISABLED)
 
-        self._zmiany_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self._btn_pobierz.pack(anchor="w", pady=(8, 0))
+        # Zaraz pod komunikatem, a nie na końcu okna: zwykłe pack() dokładało
+        # ramkę za „Wsparcie autora” i przyciskiem „Zamknij”
+        self._zmiany_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0),
+                                after=self._wynik)
+        self._btn_pobierz.pack(anchor="w", pady=(8, 0), after=self._zmiany_frame)
 
 
 # ─── Okno „Kontrola kompletności wyciągu” ─────────────────────────────────────
