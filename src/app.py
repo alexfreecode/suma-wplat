@@ -106,7 +106,7 @@ def _save_config(data: dict) -> None:
 # Trzy człony (major.minor.patch): zostawia miejsce na poprawkę bez
 # udawania, że to nowa funkcjonalność — a poprawka jest prawdopodobna,
 # bo obsługę PKO pisaliśmy bez dostępu do prawdziwych wpłat klientów.
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 # Numer wersji w pasku tytułu: użytkownik pisząc „nie działa” zwykle nie wie,
 # co ma zainstalowane, a tutaj widzi to bez szukania. Sama nazwa nie mówi,
@@ -727,7 +727,7 @@ na jej podstawie faktury do importu w Saldeo.
 Firmy, które bank pokazuje jak osoby prywatne. Jednoosobowa firma przychodzi
 na wyciągu tak samo jak osoba prywatna: imię, nazwisko, adres, bez NIP-u.
 Program nie ma jak jej odróżnić, więc trafia do raportu. Kliknij wtedy
-„[to firma]” obok nazwy klienta. Od tej chwili wpłaty od tego nadawcy nie
+przycisk „Oznacz jako firmę” obok nazwy klienta. Od tej chwili wpłaty od tego nadawcy nie
 trafiają do raportu ani do faktur Saldeo, tylko do osobnego bloku „Firmy (poza
 raportem)” na końcu. Program rozpoznaje firmę po nazwie i numerze konta. Listę
 oznaczonych firm zobaczysz i poprawisz w menu „Firmy”.
@@ -2576,14 +2576,20 @@ class App(tk.Tk):
 
     def _render_report(self):
         """Wpisuje ostatni raport do pola wyniku: kolory, a przy klientach
-        klikalne „[to firma]” i podpowiedź z bazy Saldeo.
+        przycisk „Oznacz jako firmę” i podpowiedź z bazy Saldeo.
 
-        Odnośniki istnieją tylko w oknie. Do pliku TXT idzie sam raport
-        (self._last_report), bez nich."""
+        Przyciski istnieją tylko w oknie. Do pliku TXT idzie sam raport
+        (self._last_report), bez nich.
+
+        Wcześniej był to podkreślony napis „[to firma]”: właściciel uznał go
+        za niejasny, a przycisk od razu mówi, że coś się po kliknięciu stanie."""
         theme = _report_theme()
         text = self.result_text
         text.configure(state=tk.NORMAL, bg=theme["bg"], fg=theme["fg"],
                        insertbackground=theme["insert"])
+        for b in getattr(self, "_report_buttons", []):
+            b.destroy()
+        self._report_buttons = []
         text.delete("1.0", tk.END)
         text.insert(tk.END, self._last_report)
         _koloruj_raport(text, self._last_report, theme)
@@ -2595,8 +2601,6 @@ class App(tk.Tk):
                 if acc and name not in accounts:
                     accounts[name] = acc
             hints = _nip_hints(set(df["name"]))
-            text.tag_configure("firma_link", foreground=theme["wplywy"],
-                               underline=True)
             text.tag_configure("firma_uwaga", foreground=theme["suma"])
             headers = []
             for i, line in enumerate(self._last_report.splitlines(), start=1):
@@ -2609,23 +2613,28 @@ class App(tk.Tk):
                     end = f"{line_no}.end"
                     text.insert(end, "\n  Uwaga: w bazie kontrahentów Saldeo "
                                      "ten klient ma NIP.\n  ", "firma_uwaga")
-                    self._link(f"{line_no + 2}.end", "[tak, to firma]",
-                               f"fy{n}", lambda e, a=name, b=acc: self._mark_company(a, b))
-                    text.insert(f"{line_no + 2}.end", "   ")
-                    self._link(f"{line_no + 2}.end", "[nie, to osoba prywatna]",
-                               f"fn{n}", lambda e, a=name: self._mark_private(a))
+                    self._button(f"{line_no + 2}.end", "Tak, to firma",
+                                 lambda a=name, b=acc: self._mark_company(a, b))
+                    text.insert(f"{line_no + 2}.end", "  ")
+                    self._button(f"{line_no + 2}.end", "Nie, to osoba prywatna",
+                                 lambda a=name: self._mark_private(a))
+                    continue        # przy podpowiedzi wystarczą dwa przyciski-odpowiedzi
                 text.insert(f"{line_no}.end", "    ")
-                self._link(f"{line_no}.end", "[to firma]", f"fl{n}",
-                           lambda e, a=name, b=acc: self._mark_company(a, b))
+                self._button(f"{line_no}.end", "Oznacz jako firmę",
+                             lambda a=name, b=acc: self._mark_company(a, b))
         text.configure(state=tk.DISABLED)
 
-    def _link(self, index: str, label: str, tag: str, handler):
-        """Klikalny napis w polu wyniku."""
-        text = self.result_text
-        text.insert(index, label, ("firma_link", tag))
-        text.tag_bind(tag, "<Button-1>", handler)
-        text.tag_bind(tag, "<Enter>", lambda e: text.configure(cursor="hand2"))
-        text.tag_bind(tag, "<Leave>", lambda e: text.configure(cursor=""))
+    def _button(self, index: str, label: str, command):
+        """Mały przycisk wstawiony w tekst raportu (przewija się razem z nim)."""
+        btn = tk.Button(
+            self.result_text, text=label, command=command,
+            font=("Segoe UI", 8), relief=tk.FLAT, bd=0, cursor="hand2",
+            bg="#e4e4e4", activebackground="#d0d0d0", fg="#1e1e1e",
+            padx=6, pady=0, highlightthickness=1,
+            highlightbackground="#c0c0c0",
+        )
+        self.result_text.window_create(index, window=btn, align="center")
+        self._report_buttons.append(btn)
 
     def _mark_company(self, name: str, account: str):
         if not messagebox.askyesno(
