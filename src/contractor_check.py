@@ -63,8 +63,9 @@ def load_saldeo_contractors(csv_path: str) -> list[dict]:
     ich indeksy ustalane są na podstawie nagłówka pliku (na wypadek zmiany
     kolejności kolumn w przyszłych wersjach Saldeo).
 
-    Zwraca listę {"short": ..., "full": ...} z oryginalnymi wartościami
-    (potrzebne do pokazania użytkownikowi).
+    Zwraca listę {"short": ..., "full": ..., "nip": ...} z oryginalnymi
+    wartościami (potrzebne do pokazania użytkownikowi). „nip” jest pusty,
+    gdy kontrahent to osoba prywatna albo plik nie ma tej kolumny.
     """
     contractors: list[dict] = []
 
@@ -83,6 +84,7 @@ def load_saldeo_contractors(csv_path: str) -> list[dict]:
 
         idx_short = _find("Nazwa skrócona")
         idx_full  = _find("Nazwa pełna")
+        idx_nip   = _find("NIP")
         if idx_short is None and idx_full is None:
             return contractors
 
@@ -91,10 +93,34 @@ def load_saldeo_contractors(csv_path: str) -> list[dict]:
                 continue
             short = row[idx_short].strip() if idx_short is not None and idx_short < len(row) else ""
             full  = row[idx_full].strip()  if idx_full  is not None and idx_full  < len(row) else ""
+            nip   = row[idx_nip].strip()   if idx_nip   is not None and idx_nip   < len(row) else ""
             if short or full:
-                contractors.append({"short": short, "full": full})
+                contractors.append({"short": short, "full": full, "nip": nip})
 
     return contractors
+
+
+def names_with_nip(contractors: list[dict]) -> set[str]:
+    """Znormalizowane nazwy kontrahentów, którzy mają w Saldeo NIP.
+
+    Bank nie podaje NIP-u nadawcy, a jednoosobowa firma przychodzi na
+    wyciągu tak samo jak osoba prywatna: imię, nazwisko, adres. NIP w bazie
+    Saldeo jest więc jedyną wskazówką, że to firma. Służy tylko do
+    podpowiedzi w raporcie, decyzję podejmuje użytkownik.
+    """
+    out: set[str] = set()
+    for c in contractors:
+        if not c.get("nip"):
+            continue
+        for name in (c.get("short", ""), c.get("full", "")):
+            if name:
+                out.add(_normalize(name))
+    return out
+
+
+def has_nip(client_name: str, nip_names: set[str]) -> bool:
+    """Czy klient z wyciągu ma w bazie Saldeo kartę z NIP-em (dokładna nazwa)."""
+    return _normalize(client_name) in nip_names
 
 
 # ── Porównanie klientów z bazą ───────────────────────────────────────────────

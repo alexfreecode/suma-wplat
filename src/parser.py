@@ -294,7 +294,55 @@ KOMUNIKAT_PKO_CSV = (
 # Wszystko powyżej tej linii jest bankowe, wszystko poniżej — już nie.
 KOLUMNY_WSPOLNE = ["date", "amount", "desc", "name", "title",
                    "addr_street", "addr_postal", "addr_city",
-                   "is_client", "is_hold"]
+                   "account", "is_client", "is_hold", "is_company"]
+
+
+# ─── Firmy oznaczone przez użytkownika ─────────────────────────────────────────
+#
+# Jednoosobowa firma przychodzi na wyciągu tak samo jak osoba prywatna: imię,
+# nazwisko, adres. Ani mBank, ani PKO nie podają NIP-u nadawcy, więc żadna
+# reguła tego nie rozpozna. Użytkownik oznacza taką firmę raz, program
+# zapamiętuje ją w config.json („companies”) i od tej pory odkłada jej wpłaty
+# poza raport. Rozpoznajemy po numerze konta nadawcy albo po dokładnej nazwie:
+# konto łapie tę samą firmę mimo innego zapisu nazwy, nazwa — tę samą firmę
+# płacącą z innego konta.
+
+def norm_name(name: str) -> str:
+    """Nazwa do porównania: wielkie litery, pojedyncze spacje."""
+    return " ".join(str(name or "").upper().split())
+
+
+def norm_account(account: str) -> str:
+    """Numer konta do porównania: same cyfry."""
+    return re.sub(r"\D", "", str(account or ""))
+
+
+def _mbank_account(desc: str) -> str:
+    """Konto nadawcy z opisu mBanku: 26 cyfr na końcu opisu."""
+    found = re.findall(r"(?<!\d)\d{26}(?!\d)", desc)
+    return found[-1] if found else ""
+
+
+def mark_companies(df: pd.DataFrame, companies: list | None) -> pd.DataFrame:
+    """Przenosi wpłaty firm oznaczonych przez użytkownika z klientów do firm.
+
+    Taka wpłata przestaje być „klientem” (nie trafia do raportu, faktur
+    Saldeo ani do kategorii „Klienci” kontroli kompletności), ale zostaje
+    w tabeli z flagą is_company, żeby raport mógł ją pokazać osobno.
+    """
+    df["is_company"] = False
+    if not companies or df.empty:
+        return df
+    names = {norm_name(c.get("name")) for c in companies if c.get("name")}
+    accounts = {norm_account(c.get("account")) for c in companies}
+    accounts.discard("")
+    hit = df["is_client"] & (
+        df["name"].apply(norm_name).isin(names)
+        | df["account"].apply(norm_account).isin(accounts)
+    )
+    df.loc[hit, "is_company"] = True
+    df.loc[hit, "is_client"] = False
+    return df
 
 
 def detect_bank(file_path: str) -> str:
@@ -376,6 +424,7 @@ def _load_mbank(file_path: str, encoding: str) -> pd.DataFrame:
     df["date"]   = raw["#Data operacji"].str.strip()
     df["amount"] = raw["#Kwota"].apply(parse_kwota)
     df["desc"]   = desc
+    df["account"] = desc.apply(_mbank_account)
 
     # U mBanku wszystko siedzi w jednym polu opisu, więc kierunek operacji
     # rozpoznajemy po typie przelewu zapisanym w tym samym tekście.
@@ -400,7 +449,7 @@ def _load_mbank(file_path: str, encoding: str) -> pd.DataFrame:
         df.loc[klienci, "addr_postal"] = addr.apply(lambda t: t[1])
         df.loc[klienci, "addr_city"]   = addr.apply(lambda t: t[2])
 
-    return df[KOLUMNY_WSPOLNE]
+    return df
 
 
 # ─── Wczytywanie: PKO ──────────────────────────────────────────────────────────
@@ -482,6 +531,8 @@ def _load_pko(file_path: str) -> pd.DataFrame:
         lambda v: float(v) if isinstance(v, (int, float)) else parse_kwota(str(v))
     )
     df["name"]  = raw["Nazwa nadawcy"].fillna("").astype(str).str.strip()
+    df["account"] = (raw["Rachunek nadawcy"].apply(_pko_tekst).apply(norm_account)
+                     if "Rachunek nadawcy" in raw.columns else "")
     df["title"] = raw["Opis transakcji"].apply(_pko_tytul) \
         if "Opis transakcji" in raw.columns else ""
 
@@ -533,37 +584,50 @@ def _load_pko(file_path: str) -> pd.DataFrame:
 
     df["desc"] = [opis(i) for i in raw.index]
 
-    return df[KOLUMNY_WSPOLNE]
+    return df
 
 
 # ─── Wczytywanie: wspólne wejście ──────────────────────────────────────────────
 
-def load_transactions(file_path: str, encoding: str) -> pd.DataFrame:
+def load_transactions(file_path: str, encoding: str,
+                      companies: list | None = None) -> pd.DataFrame:
     """Wczytuje wyciąg dowolnego obsługiwanego banku i zwraca tabelę
     o stałych kolumnach (KOLUMNY_WSPOLNE). Cała reszta programu — raporty,
     kontrola kompletności, faktury Saldeo — pracuje już tylko na niej
-    i o bankach nic nie wie."""
+    i o bankach nic nie wie.
+
+    companies — firmy oznaczone przez użytkownika (z config.json); ich
+    wpłaty dostają is_company zamiast is_client."""
     bank = detect_bank(file_path)
     if bank == BANK_PKO:
-        return _load_pko(file_path)
-    return _load_mbank(file_path, encoding)
+        df = _load_pko(file_path)
+    else:
+        df = _load_mbank(file_path, encoding)
+    df = mark_companies(df, companies)
+    return df[KOLUMNY_WSPOLNE]
 
 
-def analyze(file_path: str, encoding: str) -> pd.DataFrame:
+KOLUMNY_KLIENTA = ["date", "name", "amount", "title",
+                   "addr_street", "addr_postal", "addr_city", "account"]
+
+
+def analyze_split(file_path: str, encoding: str,
+                  companies: list | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Jak analyze(), ale zwraca też wpłaty od firm oznaczonych przez
+    użytkownika: (klienci, firmy)."""
+    df = load_transactions(file_path, encoding, companies)
+    clients = df[df["is_client"]][KOLUMNY_KLIENTA].reset_index(drop=True)
+    firms = df[df["is_company"]][KOLUMNY_KLIENTA].reset_index(drop=True)
+    return clients, firms
+
+
+def analyze(file_path: str, encoding: str,
+            companies: list | None = None) -> pd.DataFrame:
     """
     Wczytuje wyciąg, filtruje płatności od osób fizycznych,
-    zwraca DataFrame z kolumnami: date, name, amount, title + adres.
+    zwraca DataFrame z kolumnami: date, name, amount, title, adres i konto.
     """
-    df = load_transactions(file_path, encoding)
-    df_clients = df[df["is_client"]].copy()
-
-    if df_clients.empty:
-        return df_clients
-
-    return df_clients[
-        ["date", "name", "amount", "title",
-         "addr_street", "addr_postal", "addr_city"]
-    ].reset_index(drop=True)
+    return analyze_split(file_path, encoding, companies)[0]
 
 
 def categorize_transaction(amount: float, is_client: bool,
@@ -595,7 +659,8 @@ def _shorten(text: str, max_len: int = 70) -> str:
     return text
 
 
-def print_reconciliation_report(file_path: str, encoding: str, output_lines: list) -> None:
+def print_reconciliation_report(file_path: str, encoding: str, output_lines: list,
+                                companies: list | None = None) -> None:
     """
     Generuje osobny raport „Kontrola kompletności wyciągu” — dzieli
     WSZYSTKIE operacje wyciągu na trzy kategorie (Klienci / Pozostałe
@@ -614,7 +679,7 @@ def print_reconciliation_report(file_path: str, encoding: str, output_lines: lis
             pass
         output_lines.append(line)
 
-    df = load_transactions(file_path, encoding)
+    df = load_transactions(file_path, encoding, companies)
     df["category"] = df.apply(
         lambda r: categorize_transaction(r["amount"], bool(r["is_client"]),
                                          bool(r["is_hold"])),
@@ -687,8 +752,12 @@ def print_reconciliation_report(file_path: str, encoding: str, output_lines: lis
     out("═" * 64)
 
 
-def print_report(df: pd.DataFrame, output_lines: list) -> None:
-    """Generuje szczegółowy raport per klient + tabelę zbiorczą."""
+def print_report(df: pd.DataFrame, output_lines: list,
+                 firms: pd.DataFrame | None = None) -> None:
+    """Generuje szczegółowy raport per klient + tabelę zbiorczą.
+
+    firms — wpłaty od firm oznaczonych przez użytkownika; pokazujemy je na
+    końcu osobnym blokiem, żeby nie zniknęły z oczu."""
 
     def out(line: str = "") -> None:
         # print() pisze do sys.stdout — potrzebne tylko w trybie CLI.
@@ -707,6 +776,7 @@ def print_report(df: pd.DataFrame, output_lines: list) -> None:
 
     if df.empty:
         out("Nie znaleziono płatności od osób fizycznych.")
+        _print_firms(firms, out)
         return
 
     # Ustalamy datę pierwszej wpłaty każdego klienta
@@ -791,6 +861,30 @@ def print_report(df: pd.DataFrame, output_lines: list) -> None:
     out(f"  {'RAZEM':<35}  {total_count:>10}  {fmt_amount(total_all) + ' PLN':>16}")
     out()
     out(f"  Unikalnych klientów: {clients_count}")
+    out("═" * 64)
+    _print_firms(firms, out)
+
+
+def _print_firms(firms: pd.DataFrame | None, out) -> None:
+    """Blok „Firmy (poza raportem)”: kto i ile, bez szczegółów wpłat."""
+    if firms is None or firms.empty:
+        return
+    summary = (
+        firms.groupby("name")
+        .agg(n=("amount", "count"), s=("amount", "sum"))
+        .sort_values("s", ascending=False)
+        .reset_index()
+    )
+    out()
+    out()
+    out("═" * 64)
+    out("  FIRMY (POZA RAPORTEM)")
+    out("═" * 64)
+    for _, row in summary.iterrows():
+        out(f"  {row['name']:<35}  {int(row['n']):>10}  "
+            f"{fmt_amount(row['s']) + ' PLN':>16}")
+    out()
+    out("  Oznaczone jako firma. Zmienisz to w menu „Firmy”.")
     out("═" * 64)
 
 

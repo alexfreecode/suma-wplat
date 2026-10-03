@@ -21,10 +21,12 @@ from tkinter import (filedialog, font as tkfont, messagebox, scrolledtext,
 # Importujemy logikę analizy i generowania faktur
 from difflib import SequenceMatcher
 
-from parser import analyze, print_report, print_reconciliation_report
+from parser import (analyze_split, norm_account, norm_name, print_report,
+                    print_reconciliation_report)
 from saldeo_export import (VAT_BASIS, generate_saldeo_xlsx,
                            _parse_date)
 from contractor_check import (load_saldeo_contractors, check_clients,
+                              has_nip, names_with_nip,
                               _normalize as _normalize_txt, SIMILARITY_THRESHOLD)
 
 # ─── Konfiguracja (zachowywana między uruchomieniami) ─────────────────────────
@@ -104,7 +106,7 @@ def _save_config(data: dict) -> None:
 # Trzy człony (major.minor.patch): zostawia miejsce na poprawkę bez
 # udawania, że to nowa funkcjonalność — a poprawka jest prawdopodobna,
 # bo obsługę PKO pisaliśmy bez dostępu do prawdziwych wpłat klientów.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 # Numer wersji w pasku tytułu: użytkownik pisząc „nie działa” zwykle nie wie,
 # co ma zainstalowane, a tutaj widzi to bez szukania. Sama nazwa nie mówi,
@@ -178,6 +180,61 @@ REPORT_THEMES = {
 }
 
 
+# ─── Firmy oznaczone przez użytkownika ─────────────────────────────────────────
+#
+# Bank nie podaje NIP-u nadawcy, więc jednoosobowa firma wygląda na wyciągu
+# jak osoba prywatna. Użytkownik oznacza ją raz kliknięciem w raporcie,
+# a program pamięta to w config.json:
+#   "companies":        [{"name": ..., "account": ...}, ...]
+#   "private_confirmed": [nazwy klientów, przy których podpowiedź „ma NIP
+#                         w Saldeo” została odrzucona — żeby nie wracała]
+
+def _companies() -> list[dict]:
+    return list(_load_config().get("companies", []))
+
+
+def _add_company(name: str, account: str) -> None:
+    cfg = _load_config()
+    companies = list(cfg.get("companies", []))
+    if not any(norm_name(c.get("name")) == norm_name(name) for c in companies):
+        companies.append({"name": name, "account": norm_account(account)})
+    cfg["companies"] = companies
+    _save_config(cfg)
+
+
+def _remove_company(name: str) -> None:
+    cfg = _load_config()
+    cfg["companies"] = [c for c in cfg.get("companies", [])
+                        if norm_name(c.get("name")) != norm_name(name)]
+    _save_config(cfg)
+
+
+def _confirm_private(name: str) -> None:
+    cfg = _load_config()
+    names = set(cfg.get("private_confirmed", []))
+    names.add(norm_name(name))
+    cfg["private_confirmed"] = sorted(names)
+    _save_config(cfg)
+
+
+def _nip_hints(client_names) -> set[str]:
+    """Klienci z raportu, którzy w bazie Saldeo mają kartę z NIP-em
+    i których użytkownik nie potwierdził jeszcze jako osoby prywatne.
+    Bez podpiętej bazy (albo gdy pliku już nie ma) — pusty zbiór, raport
+    działa jak zawsze."""
+    cfg = _load_config()
+    path = (cfg.get("saldeo_contractors_csv") or "").strip()
+    if not path or not Path(path).is_file():
+        return set()
+    try:
+        nip_names = names_with_nip(load_saldeo_contractors(path))
+    except Exception:
+        return set()
+    confirmed = set(cfg.get("private_confirmed", []))
+    return {n for n in client_names
+            if has_nip(n, nip_names) and norm_name(n) not in confirmed}
+
+
 def _report_theme() -> dict:
     """Aktualny motyw raportów wg config.json (domyślnie ciemny)."""
     name = _load_config().get("report_theme", "dark")
@@ -205,7 +262,7 @@ def _koloruj_raport(text: tk.Text, report_text: str, theme: dict) -> None:
             tag = "naglowek"
         elif s.startswith(("KLIENT:", "KLIENCI")):
             tag = "klienci"
-        elif s.startswith("POZOSTAŁE WPŁYWY"):
+        elif s.startswith(("POZOSTAŁE WPŁYWY", "FIRMY (POZA RAPORTEM)")):
             tag = "wplywy"
         elif s.startswith("WYDATKI"):
             tag = "wydatki"
@@ -666,6 +723,17 @@ na jej podstawie faktury do importu w Saldeo.
   4. Kliknij „▶ Uruchom analizę”. W oknie poniżej pojawi się raport: lista
      wpłat pogrupowana według klientów wraz z sumami miesięcznymi i łączną
      tabelą zbiorczą.
+
+Firmy, które bank pokazuje jak osoby prywatne. Jednoosobowa firma przychodzi
+na wyciągu tak samo jak osoba prywatna: imię, nazwisko, adres, bez NIP-u.
+Program nie ma jak jej odróżnić, więc trafia do raportu. Kliknij wtedy
+„[to firma]” obok nazwy klienta. Od tej chwili wpłaty od tego nadawcy nie
+trafiają do raportu ani do faktur Saldeo, tylko do osobnego bloku „Firmy (poza
+raportem)” na końcu. Program rozpoznaje firmę po nazwie i numerze konta. Listę
+oznaczonych firm zobaczysz i poprawisz w menu „Firmy”.
+
+Jeśli w ustawieniach faktur podpięta jest baza kontrahentów z Saldeo, a klient
+ma w niej NIP, program sam o tym przypomni pod nazwą klienta.
 
 
 3. KONTROLA KOMPLETNOŚCI WYCIĄGU
@@ -1718,6 +1786,85 @@ class ServicesDialog(tk.Toplevel):
         self._refresh()
 
 
+class CompaniesDialog(tk.Toplevel):
+    """Lista firm oznaczonych przez użytkownika („Firmy” w menu).
+
+    Wpłaty od nich nie trafiają do raportu ani do faktur Saldeo. Tu można
+    zobaczyć, kogo program tak traktuje, i cofnąć pomyłkę. Zmiany zapisują
+    się od razu, a raport przelicza się po zamknięciu okna.
+    """
+
+    def __init__(self, parent: tk.Tk):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self._changed = False
+
+        self.title("Firmy")
+        self.configure(bg="#f0f0f0")
+        self.geometry("560x380")
+        self.minsize(440, 280)
+
+        outer = tk.Frame(self, bg="#f0f0f0", padx=14, pady=12)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(outer,
+                 text="Wpłaty od tych nadawców nie trafiają do raportu "
+                      "ani do faktur Saldeo.",
+                 font=FONT_UI, bg="#f0f0f0").pack(anchor="w")
+
+        table = tk.Frame(outer, bg="#f0f0f0")
+        table.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+        self._tree = ttk.Treeview(table, columns=("nazwa", "konto"),
+                                  show="headings", selectmode="browse")
+        self._tree.heading("nazwa", text="Nadawca")
+        self._tree.heading("konto", text="Konto")
+        self._tree.column("nazwa", width=340, anchor="w")
+        self._tree.column("konto", width=120, anchor="w", stretch=False)
+        tsb = tk.Scrollbar(table, orient=tk.VERTICAL, command=self._tree.yview)
+        self._tree.configure(yscrollcommand=tsb.set)
+        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        btn_row = tk.Frame(outer, bg="#f0f0f0")
+        btn_row.pack(fill=tk.X)
+        secondary_btn(btn_row, "Usuń z listy", self._delete,
+                      width=14).pack(side=tk.LEFT)
+        secondary_btn(btn_row, "Zamknij", self.destroy,
+                      width=12).pack(side=tk.RIGHT)
+
+        self._refresh()
+
+        self.update_idletasks()
+        pw = parent.winfo_x() + parent.winfo_width()  // 2
+        ph = parent.winfo_y() + parent.winfo_height() // 2
+        self.geometry(f"+{pw - self.winfo_width()//2}+{ph - self.winfo_height()//2}")
+        self.wait_window()
+
+    def _refresh(self):
+        self._tree.delete(*self._tree.get_children())
+        for c in _companies():
+            acc = norm_account(c.get("account"))
+            self._tree.insert("", tk.END, values=(
+                c.get("name", ""), f"…{acc[-4:]}" if acc else "—"))
+
+    def _delete(self):
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showinfo("Nie wybrano firmy",
+                                "Zaznacz najpierw pozycję na liście.",
+                                parent=self)
+            return
+        name = self._tree.item(sel[0], "values")[0]
+        _remove_company(name)
+        self._changed = True
+        self._refresh()
+
+    @property
+    def changed(self) -> bool:
+        return self._changed
+
+
 class SaldeoDialog(tk.Toplevel):
     """Modalne okno konfiguracji i generowania pliku Excel importu Saldeo."""
 
@@ -2179,6 +2326,7 @@ class App(tk.Tk):
                 pass
 
         self._df = None            # wynik ostatniej analizy
+        self._firms = None         # wpłaty od firm oznaczonych przez użytkownika
         self._last_report = ""     # tekst ostatniego raportu (do przemalowania motywu)
         # Ostatnia geometria w stanie „normalnym”. Zapamiętujemy ją na bieżąco,
         # bo po zmaksymalizowaniu okna winfo_geometry() zwraca już rozmiar
@@ -2213,6 +2361,7 @@ class App(tk.Tk):
                             command=self._open_seller_settings)
         menubar.add_command(label="Słownik usług",
                             command=self._open_services)
+        menubar.add_command(label="Firmy", command=self._open_companies)
         menubar.add_command(label="Pomoc", command=self._open_help)
         menubar.add_command(label="O programie", command=self._open_about)
         self.config(menu=menubar)
@@ -2361,7 +2510,7 @@ class App(tk.Tk):
         self.update_idletasks()
 
         try:
-            df = analyze(input_path, encoding)
+            df, firms = analyze_split(input_path, encoding, _companies())
         except Exception as exc:
             messagebox.showerror("Błąd podczas odczytu pliku", str(exc))
             self.status_var.set("Błąd — zobacz komunikat powyżej")
@@ -2369,7 +2518,7 @@ class App(tk.Tk):
 
         output_lines: list = []
         try:
-            print_report(df, output_lines)
+            print_report(df, output_lines, firms)
         except Exception as exc:
             messagebox.showerror("Błąd podczas tworzenia raportu", str(exc))
             self.status_var.set("Błąd — zobacz komunikat powyżej")
@@ -2377,16 +2526,11 @@ class App(tk.Tk):
 
         # Wyświetlamy w polu tekstowym (motyw mógł się zmienić w ustawieniach,
         # więc stosujemy go przy każdym wyświetleniu raportu)
-        theme = _report_theme()
         report_text = "\n".join(output_lines)
         self._last_report = report_text
-        self.result_text.configure(state=tk.NORMAL,
-                                   bg=theme["bg"], fg=theme["fg"],
-                                   insertbackground=theme["insert"])
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(tk.END, report_text)
-        _koloruj_raport(self.result_text, report_text, theme)
-        self.result_text.configure(state=tk.DISABLED)
+        self._df = df
+        self._firms = firms
+        self._render_report()
         self.result_text.see("1.0")
 
         # Zapis do pliku
@@ -2418,6 +2562,82 @@ class App(tk.Tk):
                 + saved_msg
             )
 
+    def _render_report(self):
+        """Wpisuje ostatni raport do pola wyniku: kolory, a przy klientach
+        klikalne „[to firma]” i podpowiedź z bazy Saldeo.
+
+        Odnośniki istnieją tylko w oknie. Do pliku TXT idzie sam raport
+        (self._last_report), bez nich."""
+        theme = _report_theme()
+        text = self.result_text
+        text.configure(state=tk.NORMAL, bg=theme["bg"], fg=theme["fg"],
+                       insertbackground=theme["insert"])
+        text.delete("1.0", tk.END)
+        text.insert(tk.END, self._last_report)
+        _koloruj_raport(text, self._last_report, theme)
+
+        df = self._df
+        if df is not None and not df.empty:
+            accounts = {}
+            for name, acc in zip(df["name"], df.get("account", [""] * len(df))):
+                if acc and name not in accounts:
+                    accounts[name] = acc
+            hints = _nip_hints(set(df["name"]))
+            text.tag_configure("firma_link", foreground=theme["wplywy"],
+                               underline=True)
+            text.tag_configure("firma_uwaga", foreground=theme["suma"])
+            headers = []
+            for i, line in enumerate(self._last_report.splitlines(), start=1):
+                if line.startswith("  KLIENT: "):
+                    headers.append((i, line[len("  KLIENT: "):].strip()))
+            # od dołu, żeby dopisane wiersze nie przesuwały numerów wyżej
+            for n, (line_no, name) in enumerate(reversed(headers)):
+                acc = accounts.get(name, "")
+                if name in hints:
+                    end = f"{line_no}.end"
+                    text.insert(end, "\n  Uwaga: w bazie kontrahentów Saldeo "
+                                     "ten klient ma NIP.\n  ", "firma_uwaga")
+                    self._link(f"{line_no + 2}.end", "[tak, to firma]",
+                               f"fy{n}", lambda e, a=name, b=acc: self._mark_company(a, b))
+                    text.insert(f"{line_no + 2}.end", "   ")
+                    self._link(f"{line_no + 2}.end", "[nie, to osoba prywatna]",
+                               f"fn{n}", lambda e, a=name: self._mark_private(a))
+                text.insert(f"{line_no}.end", "    ")
+                self._link(f"{line_no}.end", "[to firma]", f"fl{n}",
+                           lambda e, a=name, b=acc: self._mark_company(a, b))
+        text.configure(state=tk.DISABLED)
+
+    def _link(self, index: str, label: str, tag: str, handler):
+        """Klikalny napis w polu wyniku."""
+        text = self.result_text
+        text.insert(index, label, ("firma_link", tag))
+        text.tag_bind(tag, "<Button-1>", handler)
+        text.tag_bind(tag, "<Enter>", lambda e: text.configure(cursor="hand2"))
+        text.tag_bind(tag, "<Leave>", lambda e: text.configure(cursor=""))
+
+    def _mark_company(self, name: str, account: str):
+        if not messagebox.askyesno(
+                "Oznaczyć jako firmę?",
+                f"{name}\n\n"
+                "Wpłaty od tego nadawcy nie trafią już do raportu ani do faktur "
+                "Saldeo. Program rozpozna go po nazwie i numerze konta. "
+                "Cofniesz to w menu „Firmy”.",
+                parent=self):
+            return
+        _add_company(name, account)
+        self._run()
+
+    def _mark_private(self, name: str):
+        _confirm_private(name)
+        y = self.result_text.yview()[0]
+        self._render_report()
+        self.result_text.yview_moveto(y)
+
+    def _open_companies(self):
+        dlg = CompaniesDialog(self)
+        if dlg.changed and self._last_report and self.input_var.get().strip():
+            self._run()
+
     def _open_reconciliation(self):
         input_path = self.input_var.get().strip()
         if not input_path:
@@ -2431,7 +2651,8 @@ class App(tk.Tk):
 
         output_lines: list = []
         try:
-            print_reconciliation_report(input_path, encoding, output_lines)
+            print_reconciliation_report(input_path, encoding, output_lines,
+                                        _companies())
         except Exception as exc:
             messagebox.showerror("Błąd podczas tworzenia raportu", str(exc))
             return
@@ -2654,9 +2875,9 @@ class App(tk.Tk):
         self.result_text.configure(bg=theme["bg"], fg=theme["fg"],
                                    insertbackground=theme["insert"])
         if self._last_report:
-            self.result_text.configure(state=tk.NORMAL)
-            _koloruj_raport(self.result_text, self._last_report, theme)
-            self.result_text.configure(state=tk.DISABLED)
+            y = self.result_text.yview()[0]
+            self._render_report()
+            self.result_text.yview_moveto(y)
         else:
             self._show_hint()          # jeszcze nie było analizy
         # Przemaluj także otwarte okna „Kontrola kompletności" — bez tego
