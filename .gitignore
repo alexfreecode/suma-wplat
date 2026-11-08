@@ -30,3 +30,7 @@ video/
 
 # Source images from the image generator — working material, not for repo
 FB grupa/
+
+# AlternativeTo: teksty zgłoszenia, logo i zrzuty (marketing, nie do repo)
+marketing_alternativeto.md
+marketing_alternativeto/
