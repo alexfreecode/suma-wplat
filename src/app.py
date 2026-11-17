@@ -23,6 +23,7 @@ from difflib import SequenceMatcher
 
 from parser import (analyze_split, norm_account, norm_name, print_report,
                     print_reconciliation_report)
+from report_export import export_report_xlsx
 from saldeo_export import (VAT_BASIS, generate_saldeo_xlsx,
                            _parse_date)
 from contractor_check import (load_saldeo_contractors, check_clients,
@@ -106,7 +107,7 @@ def _save_config(data: dict) -> None:
 # Trzy człony (major.minor.patch): zostawia miejsce na poprawkę bez
 # udawania, że to nowa funkcjonalność — a poprawka jest prawdopodobna,
 # bo obsługę PKO pisaliśmy bez dostępu do prawdziwych wpłat klientów.
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 # Numer wersji w pasku tytułu: użytkownik pisząc „nie działa” zwykle nie wie,
 # co ma zainstalowane, a tutaj widzi to bez szukania. Sama nazwa nie mówi,
@@ -512,6 +513,28 @@ def _default_output_name(df) -> str:
     return "faktury_saldeo.xlsx"
 
 
+def _default_report_name(df, file_path: str, encoding: str) -> str:
+    """Nazwa proponowana dla raportu w Excelu: „raport_wplat_2026-09.xlsx”.
+
+    Wcześniej była to nazwa wyciągu z dopiskiem „_raport”: obok siebie w oknie
+    otwierania plików oba wyglądały tak samo (długa nazwa z banku ucięta,
+    ta sama ikona Excela). Teraz nazwa zaczyna się od „raport” i ma miesiąc.
+    Miesiące bierzemy z całego wyciągu, nie tylko z wpłat klientów: nazwa
+    TXT powstaje już przy wyborze pliku, przed analizą, i obie mają się zgadzać.
+    df zostaje w podpisie dla zgodności, nie jest używany."""
+    try:
+        from parser import load_transactions
+        dates = [d for d in load_transactions(file_path, encoding)["date"] if str(d).strip()]
+        months = sorted({_parse_date(d).strftime("%Y-%m") for d in dates})
+    except Exception:
+        months = []
+    if len(months) == 1:
+        return f"raport_wplat_{months[0]}.xlsx"
+    if len(months) > 1:
+        return f"raport_wplat_{months[0]}_{months[-1]}.xlsx"
+    return "raport_wplat.xlsx"
+
+
 # Do ilu członów uzupełniamy numer wersji przy porównywaniu
 _VERSION_PARTS = 4
 
@@ -713,23 +736,32 @@ na jej podstawie faktury do importu w Saldeo.
 ─────────────────────────────────────────────────────────────────────────────
   1. Kliknij „Wybierz” przy polu „Wyciąg bankowy” i wskaż wyeksportowaną
      z bankowości internetowej listę operacji (mBank — .csv, PKO — .xls).
-  2. Jeśli chcesz dodatkowo zapisać wynik do pliku tekstowego — wskaż jego
-     ścieżkę w polu „Plik wyjściowy TXT (opcjonalnie)” (krok ten można pominąć).
+  2. Program od razu podpowiada w polu „Plik wyjściowy TXT (opcjonalnie)”
+     nazwę raportu z miesiącem wyciągu, np. raport_wplat_2026-09.txt,
+     w folderze wyciągu. Możesz ją zmienić albo wyczyścić pole, jeśli plik
+     tekstowy nie jest potrzebny.
   3. Sprawdź „Kodowanie pliku” — zwykle właściwe jest „utf-8-sig”; jeżeli polskie
      litery (ą, ę, ś, ż...) wyświetlają się jako „krzaki”, zmień na „cp1250”
      i uruchom analizę ponownie. Ustawienie dotyczy wyłącznie plików CSV
      z mBanku; pliki XLS z PKO niosą kodowanie w sobie i to pole ich
      nie dotyczy.
   4. Kliknij „▶ Uruchom analizę”. W oknie poniżej pojawi się raport: lista
-     wpłat pogrupowana według klientów wraz z sumami miesięcznymi i łączną
+     wpłat pogrupowana według klientów, z sumą dla każdego klienta i łączną
      tabelą zbiorczą.
+
+Raport do Excela. Po analizie przycisk „Raport do Excela” zapisuje wynik
+jako arkusz, domyślnie pod nazwą raport_wplat_2026-09.xlsx. W pliku są karty:
+„Podsumowanie” (klienci i sumy), „Wpłaty” (każda wpłata osobno, z filtrem),
+„Firmy” (gdy oznaczyłeś jakieś firmy) i „Kontrola” (cały wyciąg w podziale na
+grupy, jak w kontroli kompletności). Kwoty i daty są liczbami, więc w Excelu
+można je sortować i sumować.
 
 Firmy, które bank pokazuje jak osoby prywatne. Jednoosobowa firma przychodzi
 na wyciągu tak samo jak osoba prywatna: imię, nazwisko, adres, bez NIP-u.
 Program nie ma jak jej odróżnić, więc trafia do raportu. Kliknij wtedy
-przycisk „Oznacz jako firmę” obok nazwy klienta. Od tej chwili wpłaty od tego nadawcy nie
-trafiają do raportu ani do faktur Saldeo, tylko do osobnego bloku „Firmy (poza
-raportem)” na końcu. Program rozpoznaje firmę po nazwie i numerze konta. Listę
+przycisk „Oznacz jako firmę” obok nazwy klienta. Od tej chwili wpłaty od tego
+nadawcy nie trafiają do raportu ani do faktur Saldeo, tylko do osobnego bloku
+„Firmy (poza raportem)” na końcu. Program rozpoznaje firmę po nazwie i numerze konta. Listę
 oznaczonych firm zobaczysz i poprawisz w menu „Firmy”.
 
 Jeśli w ustawieniach faktur podpięta jest baza kontrahentów z Saldeo, a klient
@@ -756,6 +788,8 @@ a kwoty zgadzają się z wyciągiem co do grosza.
 
 Raport można zapisać do pliku tekstowego („Zapisz jako”) albo skopiować
 w całości do schowka („Kopiuj do schowka”) — np. do wklejenia w e-mailu.
+Ta sama kontrola, tylko bez zwijania powtórzeń, jest też na karcie „Kontrola”
+w raporcie do Excela.
 
 Wskazówka: przycisk działa niezależnie od głównej analizy — wystarczy, że
 wskazany jest plik z wyciągiem.
@@ -2428,6 +2462,13 @@ class App(tk.Tk):
         self._saldeo_btn.configure(state=tk.DISABLED)
         self._saldeo_btn.pack(side=tk.LEFT, padx=(12, 0))
 
+        # Raport do arkusza: TXT wystarcza do czytania, ale filtrować, sumować
+        # i wysłać do biura wygodniej z Excela
+        self._excel_btn = secondary_btn(btn_row, "Raport do Excela",
+                                        self._save_excel)
+        self._excel_btn.configure(state=tk.DISABLED)
+        self._excel_btn.pack(side=tk.LEFT, padx=(12, 0))
+
         secondary_btn(btn_row, "  ✓ Kontrola kompletności  ",
                       self._open_reconciliation).pack(side=tk.LEFT, padx=(12, 0))
 
@@ -2485,7 +2526,9 @@ class App(tk.Tk):
             return
         self.input_var.set(path)
         p = Path(path)
-        self.output_var.set(str(p.with_suffix(".txt")))
+        # „raport_wplat_2026-09.txt” zamiast nazwy wyciągu z innym rozszerzeniem:
+        # obok pliku z banku nie wygląda jak jego kopia
+        self.output_var.set(str(p.parent / self._txt_report_name(path)))
         self.status_var.set(f"Wybrano plik: {p.name}")
 
     def _browse_output(self):
@@ -2494,7 +2537,7 @@ class App(tk.Tk):
         if self.input_var.get():
             p = Path(self.input_var.get())
             initial_dir  = str(p.parent)
-            initial_file = p.stem + "_raport.txt"
+            initial_file = self._txt_report_name(str(p))
 
         path = filedialog.asksaveasfilename(
             title="Zapisz raport jako...",
@@ -2559,6 +2602,8 @@ class App(tk.Tk):
         self._saldeo_btn.configure(
             state=tk.NORMAL if not df.empty else tk.DISABLED
         )
+        self._excel_btn.configure(state=tk.NORMAL)
+        self._analyzed = (input_path, encoding)
 
         # Pasek stanu
         if df.empty:
@@ -2685,6 +2730,47 @@ class App(tk.Tk):
             default_dir=str(p.parent),
             default_name=p.stem + "_kontrola.txt",
         )
+
+    def _txt_report_name(self, input_path: str) -> str:
+        name = _default_report_name(None, input_path, self.enc_var.get())
+        return name[: -len(".xlsx")] + ".txt"
+
+    def _save_excel(self):
+        """Zapisuje raport ostatniej analizy do pliku .xlsx."""
+        if self._df is None or not getattr(self, "_analyzed", None):
+            messagebox.showinfo("Brak danych",
+                                "Najpierw uruchom analizę listy operacji.")
+            return
+        input_path, encoding = self._analyzed
+        p = Path(input_path)
+        path = filedialog.asksaveasfilename(
+            title="Zapisz raport do Excela",
+            defaultextension=".xlsx",
+            filetypes=[("Pliki Excel", "*.xlsx"), ("Wszystkie pliki", "*.*")],
+            initialdir=str(p.parent),
+            initialfile=_default_report_name(self._df, input_path, encoding),
+        )
+        if not path:
+            return
+        try:
+            export_report_xlsx(path, self._df, self._firms, input_path,
+                               encoding, _companies())
+        except PermissionError:
+            messagebox.showerror(
+                "Nie udało się zapisać pliku",
+                "Plik jest otwarty w innym programie, na przykład w Excelu.\n"
+                "Zamknij go i spróbuj jeszcze raz.")
+            return
+        except Exception as exc:
+            messagebox.showerror("Nie udało się zapisać pliku", str(exc))
+            return
+        self.status_var.set(f"Zapisano raport: {Path(path).name}")
+        if messagebox.askyesno("Raport zapisany",
+                               f"Zapisano:\n{path}\n\nOtworzyć plik?"):
+            try:
+                os.startfile(path)
+            except OSError:
+                pass
 
     def _open_saldeo_dialog(self):
         if self._df is None or self._df.empty:

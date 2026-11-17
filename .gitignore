@@ -34,3 +34,6 @@ FB grupa/
 # AlternativeTo: teksty zgłoszenia, logo i zrzuty (marketing, nie do repo)
 marketing_alternativeto.md
 marketing_alternativeto/
+
+# Testowe buildy dla właściciela, nie do repo
+test_build/
