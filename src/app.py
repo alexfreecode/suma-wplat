@@ -107,7 +107,7 @@ def _save_config(data: dict) -> None:
 # Trzy człony (major.minor.patch): zostawia miejsce na poprawkę bez
 # udawania, że to nowa funkcjonalność — a poprawka jest prawdopodobna,
 # bo obsługę PKO pisaliśmy bez dostępu do prawdziwych wpłat klientów.
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 # Numer wersji w pasku tytułu: użytkownik pisząc „nie działa” zwykle nie wie,
 # co ma zainstalowane, a tutaj widzi to bez szukania. Sama nazwa nie mówi,
@@ -1360,9 +1360,18 @@ class AboutDialog(tk.Toplevel):
         )
         self._zmiany.pack(fill=tk.BOTH, expand=True)
 
+        # Przycisk pobierania razem z uwagą o zamknięciu programu: instalator
+        # uruchomiony przy otwartym programie nie może podmienić pliku .exe
+        # (program to dwa procesy, Windows zamyka tylko ten z oknem).
+        self._pobierz_frame = tk.Frame(outer, bg="#f0f0f0")
         self._btn_pobierz = secondary_btn(
-            outer, "Pobierz najnowszą wersję",
+            self._pobierz_frame, "Pobierz najnowszą wersję",
             lambda: webbrowser.open(RELEASES_PAGE))
+        self._btn_pobierz.pack(anchor="w")
+        tk.Label(self._pobierz_frame,
+                 text="Przed uruchomieniem instalatora zamknij program.",
+                 font=("Segoe UI", 9), bg="#f0f0f0", fg="#666666",
+                 justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
 
         tk.Frame(outer, bg="#d0d0d0", height=1).pack(fill=tk.X, pady=12)
 
@@ -1401,7 +1410,7 @@ class AboutDialog(tk.Toplevel):
         self._btn_sprawdz.configure(state=tk.DISABLED)
         self._wynik.configure(text="Sprawdzam…", fg="#444444")
         self._zmiany_frame.pack_forget()
-        self._btn_pobierz.pack_forget()
+        self._pobierz_frame.pack_forget()
 
         # Sieć w osobnym wątku — inaczej okno zamarza do końca zapytania
         threading.Thread(target=self._pobierz_w_tle, daemon=True).start()
@@ -1436,7 +1445,7 @@ class AboutDialog(tk.Toplevel):
                      "Sprawdź połączenie z internetem albo zajrzyj na stronę\n"
                      "wydań ręcznie — program działa dalej normalnie.",
             )
-            self._btn_pobierz.pack(anchor="w", pady=(8, 0), after=self._wynik)
+            self._pobierz_frame.pack(anchor="w", pady=(8, 0), after=self._wynik)
             return
 
         moja = _parse_version(APP_VERSION)
@@ -1504,7 +1513,7 @@ class AboutDialog(tk.Toplevel):
         # ramkę za „Wsparcie autora” i przyciskiem „Zamknij”
         self._zmiany_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0),
                                 after=self._wynik)
-        self._btn_pobierz.pack(anchor="w", pady=(8, 0), after=self._zmiany_frame)
+        self._pobierz_frame.pack(anchor="w", pady=(8, 0), after=self._zmiany_frame)
 
 
 # ─── Okno „Kontrola kompletności wyciągu” ─────────────────────────────────────

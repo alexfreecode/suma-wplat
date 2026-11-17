@@ -53,10 +53,24 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; Wyłączamy Restart Manager: program to jeden .exe z PyInstallera, który
+; działa jako dwa procesy (bez okna i z oknem). Windows umie zamknąć tylko
+; ten z oknem, plik zostaje zajęty i instalator kończył się błędem
+; „nie był w stanie automatycznie zamknąć aplikacji” (17.11.2026).
+; Zamiast tego sami sprawdzamy i zamykamy program, patrz PrepareToInstall.
+CloseApplications=no
 
 [Languages]
 Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+polish.AppRunningAsk=Program Suma Wpłat jest teraz otwarty. Aby zainstalować aktualizację, trzeba go zamknąć.%n%nZamknąć go teraz?
+polish.AppRunningStop=Zamknij program Suma Wpłat i uruchom instalator ponownie.
+polish.AppRunningUninstallAsk=Program Suma Wpłat jest teraz otwarty. Aby go odinstalować, trzeba go zamknąć.%n%nZamknąć go teraz?
+english.AppRunningAsk=Suma Wpłat is currently running. It has to be closed to install the update.%n%nClose it now?
+english.AppRunningStop=Close Suma Wpłat and run the installer again.
+english.AppRunningUninstallAsk=Suma Wpłat is currently running. It has to be closed to uninstall it.%n%nClose it now?
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -84,6 +98,79 @@ Name: "{autodesktop}\{code:GetDesktopIconName}"; Filename: "{app}\{#MyAppExeName
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// Czy program jest uruchomiony (którykolwiek z jego dwóch procesów).
+// WMI zamiast FindWindow: proces bez okna też trzyma plik .exe.
+function IsAppRunning(): Boolean;
+var
+  Locator, Service, Found: Variant;
+begin
+  Result := False;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Found := Service.ExecQuery(
+      'SELECT ProcessId FROM Win32_Process WHERE Name = ''{#MyAppExeName}''');
+    Result := Found.Count > 0;
+  except
+    Result := False;   // bez WMI nie blokujemy instalacji
+  end;
+end;
+
+// Zamyka program razem z procesem-matką (/T) i czeka, aż plik się zwolni.
+// Program zapisuje ustawienia od razu przy zmianie, więc nic się nie gubi.
+procedure CloseRunningApp();
+var
+  ResultCode, I: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM "{#MyAppExeName}"', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for I := 1 to 20 do
+  begin
+    if not IsAppRunning() then
+      Break;
+    Sleep(250);
+  end;
+  Sleep(300);
+end;
+
+// Przed kopiowaniem plików: jeśli program jest otwarty, pytamy i zamykamy.
+// Niepusty wynik zatrzymuje instalację z tym komunikatem, nic nie psując.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if IsAppRunning() then
+  begin
+    if SuppressibleMsgBox(CustomMessage('AppRunningAsk'),
+                          mbConfirmation, MB_YESNO, IDYES) = IDYES then
+    begin
+      CloseRunningApp();
+      if IsAppRunning() then
+        Result := CustomMessage('AppRunningStop');
+    end
+    else
+      Result := CustomMessage('AppRunningStop');
+  end;
+end;
+
+// To samo przy odinstalowaniu: otwarty program zostawiłby swój .exe.
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+  if IsAppRunning() then
+  begin
+    if SuppressibleMsgBox(CustomMessage('AppRunningUninstallAsk'),
+                          mbConfirmation, MB_YESNO, IDYES) = IDYES then
+    begin
+      CloseRunningApp();
+      Result := not IsAppRunning();
+      if not Result then
+        SuppressibleMsgBox(CustomMessage('AppRunningStop'), mbError, MB_OK, IDOK);
+    end
+    else
+      Result := False;
+  end;
+end;
+
 // Zwraca ścieżkę, na którą wskazuje istniejący plik .lnk (przez COM
 // WScript.Shell — ten sam mechanizm, którym PowerShell czyta skróty).
 // Gdy odczyt się nie powiedzie — zwraca pusty tekst.
